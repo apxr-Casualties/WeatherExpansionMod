@@ -1,0 +1,7 @@
+@echo off
+rem Copy this file to tools\local_env.bat (gitignored) if MSVC, CUDA, CMake, or Ninja are installed in non-standard locations.
+rem set "VS_VCVARS_BAT=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+rem set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.5"
+rem set "CMAKE_BIN_DIR=C:\Program Files\CMake\bin"
+rem set "NINJA_BIN_DIR=C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+rem set "CUDA_ARCHS=75;80;86;89;120;120-virtual"

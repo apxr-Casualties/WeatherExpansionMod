@@ -5,12 +5,25 @@ output/
 **/bin/
 **/obj/
 .vs/
+.vscode/
+.idea/
+
+# Local developer overrides (machine-specific paths)
+Directory.Build.props
+tools/local_env.bat
+
+# Release archives & media renders
+*.zip
+*.mp4
+*.gif
 
 # Python caches
 **/__pycache__/
 *.pyc
+*.pyo
 
 # Logs & temporary files
 *.log
 *.tmp
 *.user
+*.suo

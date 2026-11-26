@@ -5,9 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_RUNTIME_LIBRARY Static)
 
-# Default to Blackwell RTX 5060 (sm_120); can override via -DCMAKE_CUDA_ARCHITECTURES="86;89;120"
+# Default to multi-architecture binary supporting RTX 20/30/40/50 + future GPUs via PTX.
+# Override for faster local iteration, e.g.: -DCMAKE_CUDA_ARCHITECTURES=120
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 120)
+    set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89;120;120-virtual")
 endif()
 
 find_package(CUDAToolkit REQUIRED)

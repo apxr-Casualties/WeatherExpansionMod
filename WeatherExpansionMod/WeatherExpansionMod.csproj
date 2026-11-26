@@ -9,6 +9,9 @@
     <Nullable>enable</Nullable>
     <Optimize>true</Optimize>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Optional: set GameDir to your Casualties: Unknown installation folder (or use Directory.Build.props) -->
+    <BepInExCoreDir Condition="'$(BepInExCoreDir)' == '' and '$(GameDir)' != ''">$(GameDir)\BepInEx\core</BepInExCoreDir>
+    <GameManagedDir Condition="'$(GameManagedDir)' == '' and '$(GameDir)' != ''">$(GameDir)\CasualtiesUnknown_Data\Managed</GameManagedDir>
     <BepInExCoreDir Condition="'$(BepInExCoreDir)' == ''">..\..\BepInEx</BepInExCoreDir>
     <GameManagedDir Condition="'$(GameManagedDir)' == ''">..\..\Managed</GameManagedDir>
     <CudaDllPath Condition="'$(CudaDllPath)' == ''">..\build_cuda\bin\WeatherSimCuda.dll</CudaDllPath>
