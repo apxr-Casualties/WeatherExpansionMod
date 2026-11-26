@@ -1,0 +1,16 @@
+# Build outputs & CMake artifacts
+build_cuda/
+dist/
+output/
+**/bin/
+**/obj/
+.vs/
+
+# Python caches
+**/__pycache__/
+*.pyc
+
+# Logs & temporary files
+*.log
+*.tmp
+*.user
