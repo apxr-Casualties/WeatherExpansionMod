@@ -592,7 +592,9 @@ namespace WeatherExpansionMod.Runtime
             WeatherSimNative.WeatherSim_DefaultConfig(out _cfg, SimWidth, SimHeight);
             _cfg.cellSizeTiles = 1f / Subdivision;
             _cfg.midLayerTempC = world.ambientTemperature;
-            _cfg.sorIterations = Mathf.Clamp(WeatherConfig.SorIterations.Value, 10, 48);
+            _cfg.sorIterations = Mathf.Clamp(WeatherConfig.SorIterations.Value, 6, 30);
+            _cfg.wallTempRelaxRate = Mathf.Clamp(WeatherConfig.WallTempRelaxRate.Value, 0.001f, 0.10f);
+            _cfg.thermalDiffusivity = Mathf.Clamp(WeatherConfig.ThermalDiffusivity.Value, 0.001f, 0.10f);
             _cfg.subdivision = Subdivision;
             _cfg.evapMassPerWaterTile = WeatherConfig.EnableWaterCycleFluidSync.Value
                 ? WeatherConfig.EvapMassPerWaterTile.Value : 0f;
@@ -1237,7 +1239,7 @@ namespace WeatherExpansionMod.Runtime
             rate = 0f;
             if (fluid != null && gx >= 0 && gx < fluid.GetLength(0) && gy >= 0 && gy < fluid.GetLength(1) && fluid[gx, gy] == 6)
             {
-                rate = 5.5f;
+                rate = 2.75f; // Halved in v1.0.2 (was 5.5) for gentler terrain-to-gas heat transfer
                 return true;
             }
             if (blockId != 0)
@@ -1245,7 +1247,7 @@ namespace WeatherExpansionMod.Runtime
                 BlockInfo? info = world.GetBlockInfo(blockId);
                 if (info != null && info.hot)
                 {
-                    rate = 3.0f;
+                    rate = 1.5f; // Halved in v1.0.2 (was 3.0) for gentler terrain-to-gas heat transfer
                     return true;
                 }
             }

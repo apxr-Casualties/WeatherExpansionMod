@@ -4,6 +4,16 @@
 #include <stdint.h>
 #include "weather_sim_api.h"
 
+static constexpr int kMaxMgLevels = 10;
+
+struct WeatherMgLevel {
+    int32_t w = 0;
+    int32_t h = 0;
+    float*  p = nullptr;   // Level 0 aliases WeatherSimDeviceBuffers::p
+    float*  rhs = nullptr; // Level 0 aliases WeatherSimDeviceBuffers::div
+    float*  res = nullptr; // Residual buffer (levels 0..mgNumLevels-2)
+};
+
 struct WeatherSimDeviceBuffers {
     // Geometry & sources (W * H)
     uint8_t* cellType = nullptr;
@@ -42,6 +52,10 @@ struct WeatherSimDeviceBuffers {
     float* p = nullptr;
     float* div = nullptr;
     float* vort = nullptr;
+
+    // Geometric Multigrid V-Cycle pyramid (solves global low-frequency pressure modes)
+    WeatherMgLevel mgLevels[kMaxMgLevels];
+    int32_t        mgNumLevels = 0;
 
     // Thermodynamics & moisture (W * H)
     float* T = nullptr;

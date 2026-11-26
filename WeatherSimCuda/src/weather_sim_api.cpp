@@ -49,6 +49,20 @@ void destroyAllBuffers(WeatherSimHandle* h) {
     freeBuf(h->d.div);
     freeBuf(h->d.vort);
 
+    for (int lvl = 0; lvl < h->d.mgNumLevels; ++lvl) {
+        if (lvl > 0) {
+            freeBuf(h->d.mgLevels[lvl].p);
+            freeBuf(h->d.mgLevels[lvl].rhs);
+        } else {
+            h->d.mgLevels[lvl].p = nullptr;
+            h->d.mgLevels[lvl].rhs = nullptr;
+        }
+        freeBuf(h->d.mgLevels[lvl].res);
+        h->d.mgLevels[lvl].w = 0;
+        h->d.mgLevels[lvl].h = 0;
+    }
+    h->d.mgNumLevels = 0;
+
     freeBuf(h->d.T);
     freeBuf(h->d.TTmp);
     freeBuf(h->d.THat);
@@ -105,13 +119,13 @@ WEATHER_API void WeatherSim_DefaultConfig(WeatherSimConfig* outConfig, int32_t w
     outConfig->buoyancyScale = 60.0f;            // Doubled overall wind speed (~2x steady convective airflow)
 
     outConfig->viscosity = 0.025f;
-    outConfig->thermalDiffusivity = 0.02f;
+    outConfig->thermalDiffusivity = 0.01f;       // Halved block/air conductive heat transfer (v1.0.2)
     outConfig->moistureDiffusivity = 0.02f;
     outConfig->vorticityEps = 0.90f;
     outConfig->velocityDamping = 0.008f;
     outConfig->maxSpeedTilesPerSec = 36.0f;
 
-    outConfig->wallTempRelaxRate = 0.02f;
+    outConfig->wallTempRelaxRate = 0.01f;        // Halved terrain block-to-gas thermal relaxation (v1.0.2)
     outConfig->evapRateCoeff = 0.18f;
     outConfig->evapWindFactor = 0.35f;
     outConfig->evapCoolingScale = 0.75f;
@@ -127,7 +141,7 @@ WEATHER_API void WeatherSim_DefaultConfig(WeatherSimConfig* outConfig, int32_t w
 
     outConfig->sorIterations = 18;
     outConfig->sorOmega = 1.80f;
-    outConfig->pressureWarmStart = 0.95f;
+    outConfig->pressureWarmStart = 0.90f;
     outConfig->useMacCormack = 1;
     outConfig->initialRelHumidity = 0.62f;
 
@@ -138,8 +152,8 @@ WEATHER_API void WeatherSim_DefaultConfig(WeatherSimConfig* outConfig, int32_t w
     outConfig->ambientHumidityRate = 0.0f;
 
     outConfig->subdivision = 2;
-    outConfig->evapMassPerWaterTile = 0.14f;
-    outConfig->rainMassPerWaterTile = 0.14f; // Strict 1:1 physical water mass conservation!
+    outConfig->evapMassPerWaterTile = 0.70f;     // 5x tile mass threshold -> 1/5 water-block cycle rate (v1.0.2)
+    outConfig->rainMassPerWaterTile = 0.70f;     // Strict 1:1 physical water mass conservation!
 }
 
 WEATHER_API WeatherSimHandle* WeatherSim_Create(const WeatherSimConfig* config) {
@@ -179,6 +193,38 @@ WEATHER_API WeatherSimHandle* WeatherSim_Create(const WeatherSimConfig* config) 
     check(allocBuf(&h->d.p, N, bytes));
     check(allocBuf(&h->d.div, N, bytes));
     check(allocBuf(&h->d.vort, N, bytes));
+
+    // Build Geometric Multigrid pyramid down to coarsest grid <= 16-32 cells
+    {
+        int32_t curW = config->width;
+        int32_t curH = config->height;
+        h->d.mgNumLevels = 0;
+
+        while (h->d.mgNumLevels < kMaxMgLevels) {
+            int lvl = h->d.mgNumLevels;
+            WeatherMgLevel& L = h->d.mgLevels[lvl];
+            L.w = curW;
+            L.h = curH;
+            size_t lvlN = (size_t)curW * (size_t)curH;
+            if (lvl == 0) {
+                L.p = h->d.p;
+                L.rhs = h->d.div;
+            } else {
+                check(allocBuf(&L.p, lvlN, bytes));
+                check(allocBuf(&L.rhs, lvlN, bytes));
+            }
+            h->d.mgNumLevels++;
+
+            int32_t nextW = (curW + 1) / 2;
+            int32_t nextH = (curH + 1) / 2;
+            if (h->d.mgNumLevels >= kMaxMgLevels || nextW < 8 || nextH < 8 || std::max(curW, curH) <= 16) {
+                break;
+            }
+            check(allocBuf(&L.res, lvlN, bytes));
+            curW = nextW;
+            curH = nextH;
+        }
+    }
 
     check(allocBuf(&h->d.T, N, bytes));
     check(allocBuf(&h->d.TTmp, N, bytes));

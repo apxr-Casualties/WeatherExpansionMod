@@ -5,6 +5,7 @@ namespace WeatherExpansionMod
 {
     internal static class WeatherConfig
     {
+        public static ConfigEntry<int> ConfigSchemaVersion = null!;
         public static ConfigEntry<bool> Enabled = null!;
         public static ConfigEntry<int> PreferredSubdivision = null!;
         public static ConfigEntry<int> MaxSimCells = null!;
@@ -12,6 +13,8 @@ namespace WeatherExpansionMod
         public static ConfigEntry<float> SimHz = null!;
         public static ConfigEntry<int> SorIterations = null!;
         public static ConfigEntry<int> WarmupStepsOnLayerGen = null!;
+        public static ConfigEntry<float> WallTempRelaxRate = null!;
+        public static ConfigEntry<float> ThermalDiffusivity = null!;
 
         public static ConfigEntry<bool> OverrideVanillaLayerWeather = null!;
         public static ConfigEntry<bool> EnableBodyTemperatureCoupling = null!;
@@ -39,6 +42,7 @@ namespace WeatherExpansionMod
 
         public static void Bind(ConfigFile cfg)
         {
+            ConfigSchemaVersion = cfg.Bind("General", "ConfigSchemaVersion", 1, "Internal config migration version (auto-managed).");
             Enabled = cfg.Bind("General", "Enabled", true, "Enable WeatherExpansionMod CUDA 2D weather simulation.");
 
             PreferredSubdivision = cfg.Bind(
@@ -60,11 +64,19 @@ namespace WeatherExpansionMod
 
             SorIterations = cfg.Bind(
                 "Simulation", "SorIterations", 18,
-                new ConfigDescription("Half-width Red-Black SOR pressure projection iterations per step.", new AcceptableValueRange<int>(10, 48)));
+                new ConfigDescription("Pressure solver budget: Geometric Multigrid executes (SorIterations+4)/9 V-cycles per step (18 => 2 V-cycles).", new AcceptableValueRange<int>(6, 36)));
 
             WarmupStepsOnLayerGen = cfg.Bind(
                 "Simulation", "WarmupStepsOnLayerGen", 90,
                 new ConfigDescription("Pre-simulation steps run right after layer generation so weather is already active when you land.", new AcceptableValueRange<int>(0, 300)));
+
+            WallTempRelaxRate = cfg.Bind(
+                "Thermodynamics", "WallTempRelaxRate", 0.01f,
+                new ConfigDescription("Terrain block-to-gas thermal relaxation rate (1/s). Halved in v1.0.2 from 0.02 to 0.01 for slower block-gas heat exchange.", new AcceptableValueRange<float>(0.001f, 0.10f)));
+
+            ThermalDiffusivity = cfg.Bind(
+                "Thermodynamics", "ThermalDiffusivity", 0.01f,
+                new ConfigDescription("Gas/block conductive thermal diffusivity (tiles^2/s). Halved in v1.0.2 from 0.02 to 0.01.", new AcceptableValueRange<float>(0.001f, 0.10f)));
 
             OverrideVanillaLayerWeather = cfg.Bind(
                 "Gameplay", "OverrideVanillaLayerWeather", true,
@@ -127,12 +139,12 @@ namespace WeatherExpansionMod
                 "Evaporation depletes FluidManager water tiles and rainfall spawns new water tiles on the ground (1:1 mass conserved).");
 
             EvapMassPerWaterTile = cfg.Bind(
-                "Hydrology", "EvapMassPerWaterTile", 0.14f,
-                new ConfigDescription("Cumulative evaporated mass per game tile before removing 1 water tile (matched 1:1 with RainMassPerWaterTile).", new AcceptableValueRange<float>(0.02f, 2.0f)));
+                "Hydrology", "EvapMassPerWaterTile", 0.70f,
+                new ConfigDescription("Cumulative evaporated mass per game tile before removing 1 water tile (5x slower in v1.0.2, matched 1:1 with RainMassPerWaterTile).", new AcceptableValueRange<float>(0.05f, 5.0f)));
 
             RainMassPerWaterTile = cfg.Bind(
-                "Hydrology", "RainMassPerWaterTile", 0.14f,
-                new ConfigDescription("Cumulative rain deposited on a ground tile before spawning 1 water tile (matched 1:1 with EvapMassPerWaterTile).", new AcceptableValueRange<float>(0.02f, 2.0f)));
+                "Hydrology", "RainMassPerWaterTile", 0.70f,
+                new ConfigDescription("Cumulative rain deposited on a ground tile before spawning 1 water tile (5x slower in v1.0.2, matched 1:1 with EvapMassPerWaterTile).", new AcceptableValueRange<float>(0.05f, 5.0f)));
 
             MaxNetRainWaterTiles = cfg.Bind(
                 "Hydrology", "MaxNetRainWaterTiles", 40,
@@ -153,6 +165,17 @@ namespace WeatherExpansionMod
             ShowHudByDefault = cfg.Bind(
                 "Debug", "ShowHudByDefault", true,
                 "Show compact local weather status HUD on startup.");
+
+            // Auto-migrate unchanged v1.0.1 defaults (0.14 -> 0.70) so upgrading users immediately get v1.0.2 water-cycle pacing
+            if (ConfigSchemaVersion.Value < 2)
+            {
+                if (Mathf.Abs(EvapMassPerWaterTile.Value - 0.14f) < 0.005f)
+                    EvapMassPerWaterTile.Value = 0.70f;
+                if (Mathf.Abs(RainMassPerWaterTile.Value - 0.14f) < 0.005f)
+                    RainMassPerWaterTile.Value = 0.70f;
+                ConfigSchemaVersion.Value = 2;
+                cfg.Save();
+            }
         }
     }
 }
