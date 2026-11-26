@@ -27,8 +27,16 @@ void destroyAllBuffers(WeatherSimHandle* h) {
     if (!h) return;
     freeBuf(h->d.cellType);
     freeBuf(h->d.heatSource);
+    freeBuf(h->d.dynHeat);
     freeBuf(h->d.windForceX);
     freeBuf(h->d.windForceY);
+    freeBuf(h->d.d_dynSources);
+    freeBuf(h->d.d_heatPatchX);
+    freeBuf(h->d.d_heatPatchY);
+    freeBuf(h->d.d_heatPatchVal);
+    freeBuf(h->d.d_fullMapRgba);
+    freeBuf(h->d.d_windGridU);
+    freeBuf(h->d.d_windGridV);
 
     freeBuf(h->d.u);
     freeBuf(h->d.uTmp);
@@ -130,8 +138,8 @@ WEATHER_API void WeatherSim_DefaultConfig(WeatherSimConfig* outConfig, int32_t w
     outConfig->ambientHumidityRate = 0.0f;
 
     outConfig->subdivision = 2;
-    outConfig->evapMassPerWaterTile = 0.18f;
-    outConfig->rainMassPerWaterTile = 0.035f;
+    outConfig->evapMassPerWaterTile = 0.14f;
+    outConfig->rainMassPerWaterTile = 0.14f; // Strict 1:1 physical water mass conservation!
 }
 
 WEATHER_API WeatherSimHandle* WeatherSim_Create(const WeatherSimConfig* config) {
@@ -157,6 +165,7 @@ WEATHER_API WeatherSimHandle* WeatherSim_Create(const WeatherSimConfig* config) 
     uint64_t& bytes = h->allocatedVramBytes;
     check(allocBuf(&h->d.cellType, N, bytes));
     check(allocBuf(&h->d.heatSource, N, bytes));
+    check(allocBuf(&h->d.dynHeat, N, bytes));
     check(allocBuf(&h->d.windForceX, N, bytes));
     check(allocBuf(&h->d.windForceY, N, bytes));
 
@@ -288,6 +297,69 @@ WEATHER_API int32_t WeatherSim_UploadHeatSources(WeatherSimHandle* handle, const
         err = cudaMemsetAsync(handle->d.heatSource, 0, N * sizeof(float), handle->stream);
     }
     if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
+WEATHER_API int32_t WeatherSim_UploadStaticHeatPatch(
+    WeatherSimHandle* handle,
+    const int32_t* xs,
+    const int32_t* ys,
+    const float* rates,
+    int32_t count)
+{
+    if (!handle || count <= 0) return 0;
+    if (!xs || !ys || !rates) return -1;
+
+    if (count > handle->d.heatPatchCapacity) {
+        freeBuf(handle->d.d_heatPatchX);
+        freeBuf(handle->d.d_heatPatchY);
+        freeBuf(handle->d.d_heatPatchVal);
+        uint64_t dummy = 0;
+        cudaError_t e1 = allocBuf(&handle->d.d_heatPatchX, count, dummy);
+        cudaError_t e2 = allocBuf(&handle->d.d_heatPatchY, count, dummy);
+        cudaError_t e3 = allocBuf(&handle->d.d_heatPatchVal, count, dummy);
+        if (e1 != cudaSuccess || e2 != cudaSuccess || e3 != cudaSuccess) return -2;
+        handle->d.heatPatchCapacity = count;
+    }
+
+    cudaError_t err = cudaMemcpyAsync(handle->d.d_heatPatchX, xs, count * sizeof(int32_t), cudaMemcpyHostToDevice, handle->stream);
+    if (err == cudaSuccess) err = cudaMemcpyAsync(handle->d.d_heatPatchY, ys, count * sizeof(int32_t), cudaMemcpyHostToDevice, handle->stream);
+    if (err == cudaSuccess) err = cudaMemcpyAsync(handle->d.d_heatPatchVal, rates, count * sizeof(float), cudaMemcpyHostToDevice, handle->stream);
+    if (err == cudaSuccess) err = launchPatchStaticHeat(handle, count);
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
+WEATHER_API int32_t WeatherSim_UploadDynamicHeaters(
+    WeatherSimHandle* handle,
+    const WeatherDynamicHeatSource* sources,
+    int32_t count)
+{
+    if (!handle) return -1;
+    if (count < 0) count = 0;
+    if (count > 256) count = 256;
+
+    if (count > 0 && !sources) return -1;
+
+    if (count > handle->d.dynSourceCapacity) {
+        freeBuf(handle->d.d_dynSources);
+        uint64_t dummy = 0;
+        cudaError_t e = allocBuf(&handle->d.d_dynSources, (size_t)count, dummy);
+        if (e != cudaSuccess) return -2;
+        handle->d.dynSourceCapacity = count;
+    }
+
+    cudaError_t err = cudaSuccess;
+    if (count > 0) {
+        err = cudaMemcpyAsync(
+            handle->d.d_dynSources, sources,
+            (size_t)count * sizeof(WeatherDynamicHeatSource),
+            cudaMemcpyHostToDevice, handle->stream);
+    }
+    if (err == cudaSuccess) {
+        err = launchStampDynamicHeaters(handle, count);
+    }
     handle->lastCudaError = (int32_t)err;
     return (int32_t)err;
 }
@@ -441,6 +513,64 @@ WEATHER_API int32_t WeatherSim_ReadViewPrecipGrid(
         err = cudaMemcpyAsync(outCells, handle->d.d_precipGrid, (size_t)count * sizeof(WeatherPrecipCell), cudaMemcpyDeviceToHost, handle->stream);
         if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
     }
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
+WEATHER_API int32_t WeatherSim_RenderFullMapRGBA8(
+    WeatherSimHandle* handle,
+    int32_t mapW,
+    int32_t mapH,
+    int32_t layerMode,
+    int32_t showWalls,
+    uint8_t* outRgbaBytes)
+{
+    if (!handle || !outRgbaBytes || mapW <= 0 || mapH <= 0) return -1;
+    int32_t bytesNeeded = mapW * mapH * 4;
+    if (bytesNeeded > handle->d.fullMapRgbaCapacity) {
+        freeBuf(handle->d.d_fullMapRgba);
+        uint64_t dummy = 0;
+        cudaError_t e = allocBuf(&handle->d.d_fullMapRgba, (size_t)bytesNeeded, dummy);
+        if (e != cudaSuccess) return -2;
+        handle->d.fullMapRgbaCapacity = bytesNeeded;
+    }
+
+    cudaError_t err = launchRenderFullMapRGBA8(handle, mapW, mapH, layerMode, showWalls);
+    if (err == cudaSuccess) {
+        err = cudaMemcpyAsync(outRgbaBytes, handle->d.d_fullMapRgba, (size_t)bytesNeeded, cudaMemcpyDeviceToHost, handle->stream);
+        if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
+    }
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
+WEATHER_API int32_t WeatherSim_SampleMapWindGrid(
+    WeatherSimHandle* handle,
+    int32_t gridW,
+    int32_t gridH,
+    float* outU,
+    float* outV)
+{
+    if (!handle || !outU || !outV || gridW <= 0 || gridH <= 0) return -1;
+    int32_t count = gridW * gridH;
+    if (count > handle->d.windGridCapacity) {
+        freeBuf(handle->d.d_windGridU);
+        freeBuf(handle->d.d_windGridV);
+        uint64_t dummy = 0;
+        cudaError_t e1 = allocBuf(&handle->d.d_windGridU, (size_t)count, dummy);
+        cudaError_t e2 = allocBuf(&handle->d.d_windGridV, (size_t)count, dummy);
+        if (e1 != cudaSuccess || e2 != cudaSuccess) return -2;
+        handle->d.windGridCapacity = count;
+    }
+
+    cudaError_t err = launchSampleMapWindGrid(handle, gridW, gridH);
+    if (err == cudaSuccess) {
+        err = cudaMemcpyAsync(outU, handle->d.d_windGridU, (size_t)count * sizeof(float), cudaMemcpyDeviceToHost, handle->stream);
+    }
+    if (err == cudaSuccess) {
+        err = cudaMemcpyAsync(outV, handle->d.d_windGridV, (size_t)count * sizeof(float), cudaMemcpyDeviceToHost, handle->stream);
+    }
+    if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
     handle->lastCudaError = (int32_t)err;
     return (int32_t)err;
 }

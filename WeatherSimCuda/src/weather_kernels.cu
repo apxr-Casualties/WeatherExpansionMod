@@ -203,6 +203,56 @@ __global__ void kPatchCells(
     }
 }
 
+__global__ void kPatchStaticHeat(
+    int W, int H,
+    const int32_t* __restrict__ xs,
+    const int32_t* __restrict__ ys,
+    const float* __restrict__ rates,
+    int32_t count,
+    float* __restrict__ heatSource)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= count) return;
+    int x = xs[k];
+    int y = ys[k];
+    if (x >= 0 && x < W && y >= 0 && y < H) {
+        heatSource[cellIdx(x, y, W)] = rates[k];
+    }
+}
+
+// One 16x16 block per dynamic heat source (campfire, lit torch, Heater crystal)
+__global__ void kStampDynamicHeaters(
+    int W, int H,
+    const WeatherDynamicHeatSource* __restrict__ sources,
+    int32_t count,
+    float* __restrict__ dynHeat)
+{
+    int sIdx = blockIdx.x;
+    if (sIdx >= count) return;
+    WeatherDynamicHeatSource src = sources[sIdx];
+    float r = fminf(fmaxf(src.radiusCells, 1.0f), 40.0f);
+    if (fabsf(src.rateCPerSec) < 1e-4f) return;
+
+    int xMin = max(0, (int)floorf(src.cx - r));
+    int xMax = min(W - 1, (int)ceilf(src.cx + r));
+    int yMin = max(0, (int)floorf(src.cy - r));
+    int yMax = min(H - 1, (int)ceilf(src.cy + r));
+    float invR2 = 1.0f / (r * r);
+
+    for (int y = yMin + threadIdx.y; y <= yMax; y += blockDim.y) {
+        float dy = ((float)y + 0.5f) - src.cy;
+        int row = y * W;
+        for (int x = xMin + threadIdx.x; x <= xMax; x += blockDim.x) {
+            float dx = ((float)x + 0.5f) - src.cx;
+            float d2 = (dx * dx + dy * dy) * invR2;
+            if (d2 < 1.0f) {
+                float w = (1.0f - d2) * (1.0f - d2);
+                atomicAdd(&dynHeat[row + x], src.rateCPerSec * w);
+            }
+        }
+    }
+}
+
 // Enforce zero normal velocity ONLY on outer domain borders
 __global__ void kEnforceBoundaryU(int W, int H, float* __restrict__ u) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -563,6 +613,7 @@ __global__ void kMicrophysicsStep(
     WeatherSimConfig cfg, float dt,
     const uint8_t* __restrict__ cellType,
     const float* __restrict__ heatSource,
+    const float* __restrict__ dynHeat,
     const float* __restrict__ u,
     const float* __restrict__ v,
     float* __restrict__ T,
@@ -593,8 +644,8 @@ __global__ void kMicrophysicsStep(
     float vc = 0.5f * (v[vIdx(i, j, W)] + v[vIdx(i, j + 1, W)]);
     float speed = sqrtf(uc * uc + vc * vc);
 
-    // 1. Local heat sources (Heater / hot blocks / magma) & layer vertical thermal/moisture modifiers
-    temp += heatSource[id] * dt;
+    // 1. Static terrain heat (hot blocks/magma) + dynamic heat (campfires/torches/Heaters)
+    temp += (heatSource[id] + dynHeat[id]) * dt;
 
     {
         float wBot = lowerZoneWeight((float)j, H);
@@ -1277,7 +1328,7 @@ cudaError_t launchStepSimulation(WeatherSimHandle* h, float dt) {
     // 6. Microphysics
     kMicrophysicsStep<<<gridCell, block, 0, h->stream>>>(
         cfg, dt,
-        h->d.cellType, h->d.heatSource,
+        h->d.cellType, h->d.heatSource, h->d.dynHeat,
         h->d.u, h->d.v,
         h->d.T, h->d.qv, h->d.qc, h->d.qr, h->d.qi,
         h->d.snowAccum, h->d.evapAccum, h->d.rainAccum, h->d.latentRate);
@@ -1374,6 +1425,247 @@ cudaError_t launchSampleViewPrecipGrid(
         h->d.cellType, h->d.u, h->d.v,
         h->d.T, h->d.qc, h->d.qr, h->d.qi, h->d.snowAccum,
         h->d.d_precipGrid);
+    return cudaGetLastError();
+}
+
+// Full-map downsampled RGBA8 weather radar kernel (0=RH, 1=Cloud, 2=Rain, 3=Snow, 4=Temp, 5=Wind, 6=Composite)
+__global__ void kRenderFullMapRGBA8(
+    WeatherSimConfig cfg,
+    int mapW, int mapH, int layerMode, int showWalls,
+    const uint8_t* __restrict__ cellType,
+    const float* __restrict__ u,
+    const float* __restrict__ v,
+    const float* __restrict__ T,
+    const float* __restrict__ qv,
+    const float* __restrict__ qc,
+    const float* __restrict__ qr,
+    const float* __restrict__ qi,
+    const float* __restrict__ snowAccum,
+    uint8_t* __restrict__ outRgba)
+{
+    int mx = blockIdx.x * blockDim.x + threadIdx.x;
+    int my = blockIdx.y * blockDim.y + threadIdx.y;
+    if (mx >= mapW || my >= mapH) return;
+
+    int W = cfg.width, H = cfg.height;
+    float fx0 = ((float)mx + 0.25f) * (float)W / (float)mapW;
+    float fx1 = ((float)mx + 0.75f) * (float)W / (float)mapW;
+    float fy0 = ((float)my + 0.25f) * (float)H / (float)mapH;
+    float fy1 = ((float)my + 0.75f) * (float)H / (float)mapH;
+
+    int xs[2] = { min(max((int)fx0, 0), W - 1), min(max((int)fx1, 0), W - 1) };
+    int ys[2] = { min(max((int)fy0, 0), H - 1), min(max((int)fy1, 0), H - 1) };
+
+    float sT = 0.0f, sRH = 0.0f, sQc = 0.0f, sQr = 0.0f, sQi = 0.0f, sSacc = 0.0f, sSpd = 0.0f;
+    int solidHits = 0, waterHits = 0;
+
+    for (int ky = 0; ky < 2; ++ky) {
+        int gy = ys[ky];
+        for (int kx = 0; kx < 2; ++kx) {
+            int gx = xs[kx];
+            int id = cellIdx(gx, gy, W);
+            uint8_t ct = cellType[id];
+            if (ct == WEATHER_CELL_SOLID) solidHits++;
+            else if (ct == WEATHER_CELL_WATER) waterHits++;
+
+            float temp = T[id];
+            float qsw, dq, qsi, dqi;
+            satWater(temp, qsw, dq);
+            satIce(temp, qsi, dqi);
+            float qs = (temp <= 0.0f) ? qsi : qsw;
+            float rh = (qs > 1e-7f) ? fminf(qv[id] / qs, 1.25f) : 0.0f;
+
+            float uc = 0.5f * (u[uIdx(gx, gy, W)] + u[uIdx(gx + 1, gy, W)]);
+            float vc = 0.5f * (v[vIdx(gx, gy, W)] + v[vIdx(gx, gy + 1, W)]);
+
+            sT += temp;
+            sRH += rh;
+            sQc += qc[id];
+            sQr += qr[id];
+            sQi += qi[id];
+            sSacc += snowAccum[id];
+            sSpd += sqrtf(uc * uc + vc * vc);
+        }
+    }
+    sT *= 0.25f; sRH *= 0.25f; sQc *= 0.25f; sQr *= 0.25f; sQi *= 0.25f; sSacc *= 0.25f; sSpd *= 0.25f;
+    float solidFrac = solidHits * 0.25f;
+    float waterFrac = waterHits * 0.25f;
+
+    float r = 0.07f, g = 0.09f, b = 0.13f;
+
+    if (layerMode == 0) {
+        // Relative Humidity (0% dark ochre -> 50% teal -> 100% vivid cyan-blue)
+        float h = fminf(fmaxf(sRH, 0.0f), 1.0f);
+        if (h < 0.5f) {
+            float t = h * 2.0f;
+            r = 0.30f * (1.0f - t) + 0.08f * t;
+            g = 0.18f * (1.0f - t) + 0.42f * t;
+            b = 0.10f * (1.0f - t) + 0.48f * t;
+        } else {
+            float t = (h - 0.5f) * 2.0f;
+            r = 0.08f * (1.0f - t) + 0.25f * t;
+            g = 0.42f * (1.0f - t) + 0.85f * t;
+            b = 0.48f * (1.0f - t) + 1.00f * t;
+        }
+    } else if (layerMode == 1) {
+        // Cloud density qc
+        float c = fminf(sQc * 650.0f, 1.0f);
+        r = 0.07f + 0.85f * c;
+        g = 0.09f + 0.86f * c;
+        b = 0.14f + 0.84f * c;
+    } else if (layerMode == 2) {
+        // Rain qr
+        float rn = fminf(sQr * 900.0f, 1.0f);
+        r = 0.06f + 0.18f * rn + 0.45f * fmaxf(rn - 0.65f, 0.0f);
+        g = 0.09f + 0.55f * rn;
+        b = 0.15f + 0.85f * rn;
+    } else if (layerMode == 3) {
+        // Snow qi + ground snowAccum
+        float sn = fminf(sQi * 800.0f + sSacc * 120.0f, 1.0f);
+        r = 0.07f + 0.83f * sn;
+        g = 0.10f + 0.88f * sn;
+        b = 0.16f + 0.84f * sn;
+    } else if (layerMode == 4) {
+        // Temperature centered around midLayerTempC +/- 18C with 0C white isotherm highlight
+        float norm = fminf(fmaxf((sT - (cfg.midLayerTempC - 18.0f)) / 36.0f, 0.0f), 1.0f);
+        r = fminf(fmaxf(1.5f * norm - 0.25f, 0.05f), 1.0f);
+        g = fmaxf(0.15f, 1.0f - fabsf(2.0f * norm - 1.0f) * 0.85f);
+        b = fminf(fmaxf(1.25f - 1.5f * norm, 0.08f), 1.0f);
+        if (fabsf(sT) < 0.45f) {
+            r = 0.96f; g = 0.98f; b = 1.0f;
+        }
+    } else if (layerMode == 5) {
+        // Wind speed (0..18 tiles/s: indigo -> teal -> emerald -> bright gold)
+        float w = fminf(sSpd / 18.0f, 1.0f);
+        if (w < 0.5f) {
+            float t = w * 2.0f;
+            r = 0.10f * (1.0f - t) + 0.12f * t;
+            g = 0.08f * (1.0f - t) + 0.58f * t;
+            b = 0.26f * (1.0f - t) + 0.56f * t;
+        } else {
+            float t = (w - 0.5f) * 2.0f;
+            r = 0.12f * (1.0f - t) + 0.98f * t;
+            g = 0.58f * (1.0f - t) + 0.90f * t;
+            b = 0.56f * (1.0f - t) + 0.18f * t;
+        }
+    } else {
+        // Composite weather map
+        float cA = fminf(sQc * 500.0f, 0.78f);
+        float rA = fminf(sQr * 750.0f, 0.82f);
+        float iA = fminf(sQi * 650.0f + sSacc * 120.0f, 0.92f);
+        r = r * (1.0f - cA) + 0.86f * cA;
+        g = g * (1.0f - cA) + 0.90f * cA;
+        b = b * (1.0f - cA) + 0.94f * cA;
+        r = r * (1.0f - rA) + 0.20f * rA;
+        g = g * (1.0f - rA) + 0.62f * rA;
+        b = b * (1.0f - rA) + 1.00f * rA;
+        r = r * (1.0f - iA) + 0.85f * iA;
+        g = g * (1.0f - iA) + 0.97f * iA;
+        b = b * (1.0f - iA) + 1.00f * iA;
+    }
+
+    if (showWalls != 0) {
+        if (solidFrac > 0.0f) {
+            float k = (layerMode == 6) ? (0.45f * solidFrac) : (0.28f * solidFrac);
+            r = r * (1.0f - k) + 0.18f * k;
+            g = g * (1.0f - k) + 0.17f * k;
+            b = b * (1.0f - k) + 0.20f * k;
+        }
+        if (waterFrac > 0.0f) {
+            float k = 0.55f * waterFrac;
+            r = r * (1.0f - k) + 0.10f * k;
+            g = g * (1.0f - k) + 0.45f * k;
+            b = b * (1.0f - k) + 0.95f * k;
+        }
+    }
+
+    int outBase = (my * mapW + mx) * 4;
+    outRgba[outBase + 0] = (uint8_t)(fminf(fmaxf(r, 0.0f), 1.0f) * 255.0f);
+    outRgba[outBase + 1] = (uint8_t)(fminf(fmaxf(g, 0.0f), 1.0f) * 255.0f);
+    outRgba[outBase + 2] = (uint8_t)(fminf(fmaxf(b, 0.0f), 1.0f) * 255.0f);
+    outRgba[outBase + 3] = 255;
+}
+
+__global__ void kSampleMapWindGrid(
+    int W, int H, int gridW, int gridH,
+    const float* __restrict__ u,
+    const float* __restrict__ v,
+    float* __restrict__ outU,
+    float* __restrict__ outV)
+{
+    int gx = blockIdx.x * blockDim.x + threadIdx.x;
+    int gy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (gx >= gridW || gy >= gridH) return;
+
+    // 3x3 local average around each wind-arrow anchor point for smooth readable arrows
+    float cx = ((float)gx + 0.5f) * (float)W / (float)gridW;
+    float cy = ((float)gy + 0.5f) * (float)H / (float)gridH;
+    float stepX = fmaxf(1.0f, 0.25f * (float)W / (float)gridW);
+    float stepY = fmaxf(1.0f, 0.25f * (float)H / (float)gridH);
+
+    float sumU = 0.0f, sumV = 0.0f;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            float sx = fminf(fmaxf(cx + dx * stepX, 0.5f), (float)W - 0.5f);
+            float sy = fminf(fmaxf(cy + dy * stepY, 0.5f), (float)H - 0.5f);
+            sumU += sampleU(u, sx, sy, W, H);
+            sumV += sampleV(v, sx, sy, W, H);
+        }
+    }
+    int outIdx = gy * gridW + gx;
+    outU[outIdx] = sumU / 9.0f;
+    outV[outIdx] = sumV / 9.0f;
+}
+
+cudaError_t launchPatchStaticHeat(WeatherSimHandle* h, int32_t count) {
+    if (count <= 0) return cudaSuccess;
+    int threads = 256;
+    int blocks = (count + threads - 1) / threads;
+    kPatchStaticHeat<<<blocks, threads, 0, h->stream>>>(
+        h->cfg.width, h->cfg.height,
+        h->d.d_heatPatchX, h->d.d_heatPatchY, h->d.d_heatPatchVal, count,
+        h->d.heatSource);
+    return cudaGetLastError();
+}
+
+cudaError_t launchStampDynamicHeaters(WeatherSimHandle* h, int32_t count) {
+    size_t N = (size_t)h->cfg.width * (size_t)h->cfg.height;
+    cudaError_t err = cudaMemsetAsync(h->d.dynHeat, 0, N * sizeof(float), h->stream);
+    if (err != cudaSuccess || count <= 0) return err;
+    dim3 block(16, 16);
+    dim3 grid(count, 1);
+    kStampDynamicHeaters<<<grid, block, 0, h->stream>>>(
+        h->cfg.width, h->cfg.height,
+        h->d.d_dynSources, count,
+        h->d.dynHeat);
+    return cudaGetLastError();
+}
+
+cudaError_t launchRenderFullMapRGBA8(
+    WeatherSimHandle* h,
+    int32_t mapW, int32_t mapH,
+    int32_t layerMode, int32_t showWalls)
+{
+    dim3 block(16, 16);
+    dim3 grid((mapW + 15) / 16, (mapH + 15) / 16);
+    kRenderFullMapRGBA8<<<grid, block, 0, h->stream>>>(
+        h->cfg, mapW, mapH, layerMode, showWalls,
+        h->d.cellType, h->d.u, h->d.v,
+        h->d.T, h->d.qv, h->d.qc, h->d.qr, h->d.qi, h->d.snowAccum,
+        h->d.d_fullMapRgba);
+    return cudaGetLastError();
+}
+
+cudaError_t launchSampleMapWindGrid(
+    WeatherSimHandle* h,
+    int32_t gridW, int32_t gridH)
+{
+    dim3 block(16, 16);
+    dim3 grid((gridW + 15) / 16, (gridH + 15) / 16);
+    kSampleMapWindGrid<<<grid, block, 0, h->stream>>>(
+        h->cfg.width, h->cfg.height, gridW, gridH,
+        h->d.u, h->d.v,
+        h->d.d_windGridU, h->d.d_windGridV);
     return cudaGetLastError();
 }
 

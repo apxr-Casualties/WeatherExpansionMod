@@ -66,11 +66,11 @@ namespace WeatherExpansionMod.Runtime
 
         public void ApplyToConfig(ref WeatherSimConfig cfg)
         {
-            // Baseline stratum physics (real evaporation, crisp air until true condensation)
+            // Strict mass-conserving baseline: NO infinite artificial moisture creation!
             cfg.initialRelHumidity = 0.58f;
             cfg.bgLapseRateCPerTile = 0.032f;
             cfg.adiabaticLapseCPerTile = 0.060f;
-            cfg.evapRateCoeff = 0.18f;
+            cfg.evapRateCoeff = 0.20f;
             cfg.bottomTempBoostC = 0.0f;
             cfg.topTempDropC = 0.0f;
             cfg.bottomMoistureSource = 0.0f;
@@ -85,54 +85,48 @@ namespace WeatherExpansionMod.Runtime
 
             if (IsFloodedModifier)
             {
-                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.72f);
-                cfg.evapRateCoeff = 0.22f;
+                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.74f);
+                cfg.evapRateCoeff = 0.25f;
             }
 
-            // Foggy modifier: high humidity so condensation clouds/fog form naturally without solid whiteout
+            // Foggy modifier: high initial humidity + stronger real evaporation + mild upper cooling (zero water printed!)
             if (IsFoggyModifier)
             {
-                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.90f);
-                cfg.ambientHumidityTarget = System.Math.Max(cfg.ambientHumidityTarget, 0.92f);
-                cfg.ambientHumidityRate = System.Math.Max(cfg.ambientHumidityRate, 0.025f);
-                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.24f);
-                cfg.bottomMoistureSource = System.Math.Max(cfg.bottomMoistureSource, 0.00010f);
+                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.92f);
+                cfg.topTempDropC = System.Math.Max(cfg.topTempDropC, 2.0f);
+                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.28f);
             }
 
-            // Layer 6 native cold fog -> high humidity + cooler ceiling -> mist & snowfall
+            // Layer 6 native cold fog -> high initial humidity + colder upper cavern -> natural mist & snow
             if (IsBiome6ColdFog)
             {
-                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.86f);
-                cfg.ambientHumidityTarget = System.Math.Max(cfg.ambientHumidityTarget, 0.89f);
-                cfg.ambientHumidityRate = System.Math.Max(cfg.ambientHumidityRate, 0.022f);
-                cfg.topTempDropC = System.Math.Max(cfg.topTempDropC, 3.0f);
-                cfg.bottomMoistureSource = System.Math.Max(cfg.bottomMoistureSource, 0.00010f);
+                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.88f);
+                cfg.topTempDropC = System.Math.Max(cfg.topTempDropC, 3.5f);
+                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.26f);
             }
 
-            // Rainy modifier: warm & humid lower stratum + cooler upper stratum -> sustained convection & rain/snow
+            // Rainy modifier: strong bottom-warm / top-cold thermal gradient + high evaporation -> closed-loop convective rain!
             if (IsRainyModifier)
             {
-                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.82f);
-                cfg.bottomTempBoostC += 6.0f;
-                cfg.topTempDropC += 6.0f;
-                cfg.bgLapseRateCPerTile = System.Math.Max(cfg.bgLapseRateCPerTile, 0.045f);
-                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.26f);
-                cfg.bottomMoistureSource += 0.00028f;
-                cfg.autoconvertThresh = 0.00060f;
-                cfg.autoconvertRate = 0.18f;
-            }
-
-            // Layer 7 native fungal rain -> strong convective rain profile
-            if (IsBiome7ConvectiveRain)
-            {
                 cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.84f);
-                cfg.bottomTempBoostC = System.Math.Max(cfg.bottomTempBoostC, 6.5f);
-                cfg.topTempDropC = System.Math.Max(cfg.topTempDropC, 6.5f);
+                cfg.bottomTempBoostC += 6.5f;
+                cfg.topTempDropC += 6.5f;
                 cfg.bgLapseRateCPerTile = System.Math.Max(cfg.bgLapseRateCPerTile, 0.048f);
-                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.28f);
-                cfg.bottomMoistureSource = System.Math.Max(cfg.bottomMoistureSource, 0.00032f);
+                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.32f);
                 cfg.autoconvertThresh = 0.00055f;
                 cfg.autoconvertRate = 0.20f;
+            }
+
+            // Layer 7 native fungal rain -> strong convective rain driven by thermal gradient & real evaporation
+            if (IsBiome7ConvectiveRain)
+            {
+                cfg.initialRelHumidity = System.Math.Max(cfg.initialRelHumidity, 0.86f);
+                cfg.bottomTempBoostC = System.Math.Max(cfg.bottomTempBoostC, 7.0f);
+                cfg.topTempDropC = System.Math.Max(cfg.topTempDropC, 7.0f);
+                cfg.bgLapseRateCPerTile = System.Math.Max(cfg.bgLapseRateCPerTile, 0.050f);
+                cfg.evapRateCoeff = System.Math.Max(cfg.evapRateCoeff, 0.34f);
+                cfg.autoconvertThresh = 0.00050f;
+                cfg.autoconvertRate = 0.22f;
             }
         }
     }

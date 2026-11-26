@@ -57,15 +57,16 @@ namespace WeatherExpansionMod.Runtime
                 ? WeatherVisualRenderer.Instance.GetModeLabel()
                 : "N/A";
 
+            int netWater = host.TotalRainWaterTiles - host.TotalEvaporatedTiles;
             string text =
-                $"<b>天气拓展 (CUDA 异步 2D)</b>  [{host.ActiveProfile.SummaryTags}]\n" +
-                $"当地气温: <b>{s.tempC:+0.0;-0.0;0.0}°C</b> (体感 {host.PlayerEffectiveTempC:+0.0;-0.0;0.0}°C | 中段基准 {host.VanillaMidLayerTempC:+0.0;-0.0;0.0}°C)\n" +
+                $"<b>天气拓展 v{WeatherPlugin.PluginVersion} (CUDA 异步)</b>  [{host.ActiveProfile.SummaryTags}]\n" +
+                $"当地气温: <b>{s.tempC:+0.0;-0.0;0.0}°C</b> (体感 {host.PlayerEffectiveTempC:+0.0;-0.0;0.0}°C | 中段 {host.VanillaMidLayerTempC:+0.0;-0.0;0.0}°C)  |  热源: {host.ActiveDynamicHeaterCount}\n" +
                 $"相对湿度: <b>{s.relHumidity * 100f:F0}%</b>  |  风速: <b>{windSpd:F2}</b> ({s.u:+0.0;-0.0}, {s.v:+0.0;-0.0}) tiles/s\n" +
-                $"云/雨/雪: qc={s.cloud * 1000f:F2}  qr={s.rain * 1000f:F2}  qi={s.snow * 1000f:F2} g/kg  |  水循环: 蒸发-{host.TotalEvaporatedTiles} 降雨+{host.TotalRainWaterTiles}\n" +
+                $"云/雨/雪: qc={s.cloud * 1000f:F2}  qr={s.rain * 1000f:F2}  qi={s.snow * 1000f:F2} g/kg  |  水平衡: 蒸-{host.TotalEvaporatedTiles} 降+{host.TotalRainWaterTiles} (净{netWater:+0;-0;0})\n" +
                 $"网格: {host.SimWidth}x{host.SimHeight} ({host.Subdivision}x{host.Subdivision}/格)  |  GPU: {st.lastStepGpuMs:F2}ms  |  显存: {st.allocatedVramBytes / (1024f * 1024f):F1}MB\n" +
-                $"视图 [{WeatherConfig.CycleDebugOverlayKey.Value}]: {modeLabel}  |  [{WeatherConfig.ToggleHudKey.Value}] 隐藏";
+                $"[{WeatherConfig.ToggleFullMapKey.Value}] 全图雷达  |  [{WeatherConfig.CycleDebugOverlayKey.Value}] {modeLabel}  |  [{WeatherConfig.ToggleHudKey.Value}] 隐藏";
 
-            Rect rect = new Rect(14f, 14f, 510f, 122f);
+            Rect rect = new Rect(14f, 14f, 540f, 122f);
             GUI.Box(rect, GUIContent.none, _boxStyle);
             GUI.Label(new Rect(rect.x + 10f, rect.y + 7f, rect.width - 20f, rect.height - 14f), text, _labelStyle);
         }

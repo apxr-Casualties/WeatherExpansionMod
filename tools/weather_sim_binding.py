@@ -71,6 +71,15 @@ class WeatherFluidEvent(ctypes.Structure):
     ]
 
 
+class WeatherDynamicHeatSource(ctypes.Structure):
+    _fields_ = [
+        ("cx", ctypes.c_float),
+        ("cy", ctypes.c_float),
+        ("radiusCells", ctypes.c_float),
+        ("rateCPerSec", ctypes.c_float),
+    ]
+
+
 class WeatherSimStats(ctypes.Structure):
     _fields_ = [
         ("lastStepGpuMs", ctypes.c_float),
@@ -128,6 +137,23 @@ def load_dll(dll_path=None):
 
     dll.WeatherSim_UploadHeatSources.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     dll.WeatherSim_UploadHeatSources.restype = ctypes.c_int32
+
+    dll.WeatherSim_UploadDynamicHeaters.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(WeatherDynamicHeatSource), ctypes.c_int32
+    ]
+    dll.WeatherSim_UploadDynamicHeaters.restype = ctypes.c_int32
+
+    dll.WeatherSim_RenderFullMapRGBA8.argtypes = [
+        ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32,
+        ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p
+    ]
+    dll.WeatherSim_RenderFullMapRGBA8.restype = ctypes.c_int32
+
+    dll.WeatherSim_SampleMapWindGrid.argtypes = [
+        ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32,
+        ctypes.c_void_p, ctypes.c_void_p
+    ]
+    dll.WeatherSim_SampleMapWindGrid.restype = ctypes.c_int32
 
     dll.WeatherSim_UploadWindSources.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     dll.WeatherSim_UploadWindSources.restype = ctypes.c_int32

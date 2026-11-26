@@ -170,19 +170,19 @@ def get_preset(preset_name):
                 vorticityEps=0.90,
                 velocityDamping=0.008,
                 maxSpeedTilesPerSec=36.0,
-                bottomTempBoostC=5.5,
-                topTempDropC=5.5,
-                bottomMoistureSource=0.00024,
-                evapRateCoeff=0.22,
+                bottomTempBoostC=6.5,
+                topTempDropC=6.5,
+                bottomMoistureSource=0.0,
+                evapRateCoeff=0.32,
                 evapWindFactor=0.35,
                 autoconvertThresh=0.00055,
                 autoconvertRate=0.20,
                 rainFallSpeed=8.0,
                 snowFallSpeed=1.5,
                 sorIterations=18,
-                initialRelHumidity=0.76,
-                evapMassPerWaterTile=0.16,
-                rainMassPerWaterTile=0.028,
+                initialRelHumidity=0.84,
+                evapMassPerWaterTile=0.14,
+                rainMassPerWaterTile=0.14,
             ),
             (-2.0, 22.0),
         )
@@ -329,7 +329,7 @@ def render_4panel(sim, cells, t_sec, preset_label, temp_range, counters, out_pat
 
     st = sim.stats()
     fig.suptitle(
-        f"天气拓展 WeatherExpansionMod (CUDA 2D 实时天气模拟 v0.3.0)  |  {preset_label}\n"
+        f"天气拓展 WeatherExpansionMod (CUDA 2D 实时天气模拟 v1.0.1)  |  {preset_label}\n"
         f"t = {t_sec:5.1f}s  |  网格 {W}×{H} (1游戏格=4模拟格)  |  地层中段温度 T_mid = {sim.cfg.midLayerTempC:+.1f}°C  |  "
         f"GPU {st.lastStepGpuMs:.2f}ms · 水循环: 蒸发 -{counters['evap']} 格 / 降雨生水 +{counters['rain']} 格",
         fontsize=12.5,

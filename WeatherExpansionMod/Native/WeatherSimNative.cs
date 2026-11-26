@@ -70,6 +70,15 @@ namespace WeatherExpansionMod.Native
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct WeatherDynamicHeatSource
+    {
+        public float cx;
+        public float cy;
+        public float radiusCells;
+        public float rateCPerSec;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct WeatherSimStats
     {
         public float lastStepGpuMs;
@@ -170,6 +179,20 @@ namespace WeatherExpansionMod.Native
         public static extern int WeatherSim_UploadHeatSources(IntPtr handle, float[] heatRateCPerSec);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int WeatherSim_UploadStaticHeatPatch(
+            IntPtr handle,
+            int[] xs,
+            int[] ys,
+            float[] rates,
+            int count);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int WeatherSim_UploadDynamicHeaters(
+            IntPtr handle,
+            WeatherDynamicHeatSource[]? sources,
+            int count);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int WeatherSim_UploadWindSources(IntPtr handle, float[]? forceX, float[]? forceY);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
@@ -209,6 +232,23 @@ namespace WeatherExpansionMod.Native
             int outW,
             int outH,
             [Out] WeatherPrecipCell[] outCells);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int WeatherSim_RenderFullMapRGBA8(
+            IntPtr handle,
+            int mapW,
+            int mapH,
+            int layerMode,
+            int showWalls,
+            [Out] byte[] outRgbaBytes);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int WeatherSim_SampleMapWindGrid(
+            IntPtr handle,
+            int gridW,
+            int gridH,
+            [Out] float[] outU,
+            [Out] float[] outV);
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int WeatherSim_PopFluidEvents(

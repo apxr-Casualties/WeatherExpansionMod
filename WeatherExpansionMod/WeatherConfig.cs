@@ -27,9 +27,12 @@ namespace WeatherExpansionMod
         public static ConfigEntry<float> PlayerFogClearOuterTiles = null!;
         public static ConfigEntry<float> PlayerFogMinFactor = null!;
         public static ConfigEntry<float> FluidSyncIntervalSec = null!;
+        public static ConfigEntry<float> DynamicHeaterSyncIntervalSec = null!;
         public static ConfigEntry<bool> EnableWaterCycleFluidSync = null!;
         public static ConfigEntry<float> EvapMassPerWaterTile = null!;
         public static ConfigEntry<float> RainMassPerWaterTile = null!;
+        public static ConfigEntry<int> MaxNetRainWaterTiles = null!;
+        public static ConfigEntry<KeyCode> ToggleFullMapKey = null!;
         public static ConfigEntry<KeyCode> CycleDebugOverlayKey = null!;
         public static ConfigEntry<KeyCode> ToggleHudKey = null!;
         public static ConfigEntry<bool> ShowHudByDefault = null!;
@@ -115,17 +118,29 @@ namespace WeatherExpansionMod
                 "Simulation", "FluidSyncIntervalSec", 0.5f,
                 new ConfigDescription("Seconds between incremental FluidManager water-cell sync scans around the active viewport.", new AcceptableValueRange<float>(0.1f, 5.0f)));
 
+            DynamicHeaterSyncIntervalSec = cfg.Bind(
+                "Simulation", "DynamicHeaterSyncIntervalSec", 0.5f,
+                new ConfigDescription("Seconds between dynamic heat source scans (campfires, lit torches, Heater crystals).", new AcceptableValueRange<float>(0.2f, 5.0f)));
+
             EnableWaterCycleFluidSync = cfg.Bind(
                 "Hydrology", "EnableWaterCycleFluidSync", true,
-                "Evaporation depletes FluidManager water tiles and rainfall spawns new water tiles on the ground.");
+                "Evaporation depletes FluidManager water tiles and rainfall spawns new water tiles on the ground (1:1 mass conserved).");
 
             EvapMassPerWaterTile = cfg.Bind(
-                "Hydrology", "EvapMassPerWaterTile", 0.18f,
-                new ConfigDescription("Cumulative evaporated mass per game tile before removing 1 water tile (~15-30s under breezy dry air).", new AcceptableValueRange<float>(0.02f, 2.0f)));
+                "Hydrology", "EvapMassPerWaterTile", 0.14f,
+                new ConfigDescription("Cumulative evaporated mass per game tile before removing 1 water tile (matched 1:1 with RainMassPerWaterTile).", new AcceptableValueRange<float>(0.02f, 2.0f)));
 
             RainMassPerWaterTile = cfg.Bind(
-                "Hydrology", "RainMassPerWaterTile", 0.035f,
-                new ConfigDescription("Cumulative rain deposited on a ground tile before spawning 1 water tile (~15-30s under steady rain).", new AcceptableValueRange<float>(0.005f, 1.0f)));
+                "Hydrology", "RainMassPerWaterTile", 0.14f,
+                new ConfigDescription("Cumulative rain deposited on a ground tile before spawning 1 water tile (matched 1:1 with EvapMassPerWaterTile).", new AcceptableValueRange<float>(0.02f, 2.0f)));
+
+            MaxNetRainWaterTiles = cfg.Bind(
+                "Hydrology", "MaxNetRainWaterTiles", 40,
+                new ConfigDescription("Soft cap on net new water tiles (RainSpawned - Evaporated) allowed from initial atmospheric humidity, preventing map flooding.", new AcceptableValueRange<int>(0, 500)));
+
+            ToggleFullMapKey = cfg.Bind(
+                "Debug", "ToggleFullMapKey", KeyCode.F7,
+                "Hotkey to toggle the interactive Full-Map Weather Radar UI (RH, Cloud, Rain, Snow, Temp, Wind).");
 
             CycleDebugOverlayKey = cfg.Bind(
                 "Debug", "CycleDebugOverlayKey", KeyCode.F8,

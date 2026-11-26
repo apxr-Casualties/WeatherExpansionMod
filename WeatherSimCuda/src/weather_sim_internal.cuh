@@ -7,9 +7,26 @@
 struct WeatherSimDeviceBuffers {
     // Geometry & sources (W * H)
     uint8_t* cellType = nullptr;
-    float*   heatSource = nullptr;
+    float*   heatSource = nullptr;  // Static terrain heat (hot blocks, magma)
+    float*   dynHeat = nullptr;     // Dynamic scene heat (campfires, torches, Heater crystals)
     float*   windForceX = nullptr;
     float*   windForceY = nullptr;
+
+    // Dynamic heat source upload scratch
+    WeatherDynamicHeatSource* d_dynSources = nullptr;
+    int32_t                   dynSourceCapacity = 0;
+
+    int32_t* d_heatPatchX = nullptr;
+    int32_t* d_heatPatchY = nullptr;
+    float*   d_heatPatchVal = nullptr;
+    int32_t  heatPatchCapacity = 0;
+
+    // Full-map weather radar UI readback scratch
+    uint8_t* d_fullMapRgba = nullptr;
+    int32_t  fullMapRgbaCapacity = 0;
+    float*   d_windGridU = nullptr;
+    float*   d_windGridV = nullptr;
+    int32_t  windGridCapacity = 0;
 
     // MAC staggered velocities
     // u: (W + 1) * H
@@ -89,6 +106,8 @@ struct WeatherSimHandle {
 // Host-callable launcher declarations (implemented in weather_kernels.cu)
 cudaError_t launchResetFields(WeatherSimHandle* h);
 cudaError_t launchPatchCells(WeatherSimHandle* h, int32_t count);
+cudaError_t launchPatchStaticHeat(WeatherSimHandle* h, int32_t count);
+cudaError_t launchStampDynamicHeaters(WeatherSimHandle* h, int32_t count);
 cudaError_t launchStepSimulation(WeatherSimHandle* h, float dt);
 cudaError_t launchSamplePoints(WeatherSimHandle* h, int32_t count);
 cudaError_t launchPrepareFieldForCopy(WeatherSimHandle* h, int32_t fieldId, const float** outDevicePtr);
@@ -105,4 +124,11 @@ cudaError_t launchSampleViewPrecipGrid(
     int32_t x0, int32_t y0,
     int32_t winW, int32_t winH,
     int32_t outW, int32_t outH);
+cudaError_t launchRenderFullMapRGBA8(
+    WeatherSimHandle* h,
+    int32_t mapW, int32_t mapH,
+    int32_t layerMode, int32_t showWalls);
+cudaError_t launchSampleMapWindGrid(
+    WeatherSimHandle* h,
+    int32_t gridW, int32_t gridH);
 cudaError_t launchResolveFluidEvents(WeatherSimHandle* h);
