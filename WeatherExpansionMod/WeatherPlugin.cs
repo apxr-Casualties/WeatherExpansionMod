@@ -13,7 +13,7 @@ namespace WeatherExpansionMod
     {
         public const string PluginGuid = "com.casualties.weather.expansion";
         public const string PluginName = "Weather Expansion Mod (天气拓展)";
-        public const string PluginVersion = "1.0.2";
+        public const string PluginVersion = "1.0.3";
 
         internal static ManualLogSource? Log;
         private static Harmony? _harmony;

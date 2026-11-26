@@ -1062,16 +1062,23 @@ namespace WeatherExpansionMod.Runtime
             int fw = fluid.GetLength(0);
             int fh = fluid.GetLength(1);
             ushort[,]? blocks = WorldBlocksField?.GetValue(world) as ushort[,];
-            int maxNetWater = Math.Max(0, WeatherConfig.MaxNetRainWaterTiles.Value);
+            int maxNetRain = Math.Max(0, WeatherConfig.MaxNetRainWaterTiles.Value);
+            int maxNetEvap = Math.Max(0, WeatherConfig.MaxNetEvapWaterTiles.Value);
 
-            // Process evaporations (-1) first so freed water budget is immediately available for rainfall (+1)
+            // Symmetric two-pass ordering:
+            // - If near evaporation deficit limit (-maxNetEvap), apply rainfall (+1) first to free evap budget.
+            // - Otherwise apply evaporations (-1) first to free rainfall budget.
+            bool rainFirst = (TotalEvaporatedTiles - TotalRainWaterTiles) >= maxNetEvap;
+
             for (int pass = 0; pass < 2; pass++)
             {
+                bool handleRainPass = rainFirst ? (pass == 0) : (pass == 1);
+
                 for (int i = 0; i < _mainFluidScratch.Count; i++)
                 {
                     WeatherFluidEvent ev = _mainFluidScratch[i];
-                    if (pass == 0 && ev.delta >= 0) continue;
-                    if (pass == 1 && ev.delta <= 0) continue;
+                    if (!handleRainPass && ev.delta >= 0) continue;
+                    if (handleRainPass && ev.delta <= 0) continue;
 
                     int gx = OriginTileX + ev.tileX;
                     int gy = OriginTileY + ev.tileY;
@@ -1084,16 +1091,31 @@ namespace WeatherExpansionMod.Runtime
                         byte f = fluid[gx, gy];
                         if (f == 1 || f == 2 || f == 5)
                         {
+                            // Lower guardrail: once (Evaporated - RainSpawned) >= maxNetEvap, stop removing water tiles
+                            // while restoring GPU cellType=Water so Dalton evaporation still produces water vapor!
+                            if ((TotalEvaporatedTiles - TotalRainWaterTiles) >= maxNetEvap)
+                            {
+                                if (_tileCellTypes != null && tIdx >= 0 && tIdx < _tileCellTypes.Length)
+                                    _tileCellTypes[tIdx] = (byte)WeatherCellType.Water;
+                                QueueTilePatch(ev.tileX, ev.tileY, (byte)WeatherCellType.Water);
+                                continue;
+                            }
+
                             fluid[gx, gy] = 0;
                             if (_tileCellTypes != null && tIdx >= 0 && tIdx < _tileCellTypes.Length)
                                 _tileCellTypes[tIdx] = (byte)WeatherCellType.Air;
                             TotalEvaporatedTiles++;
                         }
+                        else if (_tileCellTypes != null && tIdx >= 0 && tIdx < _tileCellTypes.Length &&
+                                 _tileCellTypes[tIdx] == (byte)WeatherCellType.Water)
+                        {
+                            _tileCellTypes[tIdx] = (byte)WeatherCellType.Air;
+                        }
                     }
                     else if (ev.delta > 0)
                     {
-                        // Strict water balance guard: net rainfall water cannot exceed evaporated + soft cap
-                        if ((TotalRainWaterTiles - TotalEvaporatedTiles) >= maxNetWater)
+                        // Upper guardrail: once (RainSpawned - Evaporated) >= maxNetRain, stop spawning water tiles
+                        if ((TotalRainWaterTiles - TotalEvaporatedTiles) >= maxNetRain)
                             continue;
 
                         ushort b = blocks != null ? blocks[gx, gy] : world.GetBlock(new Vector2Int(gx, gy));

@@ -35,6 +35,7 @@ namespace WeatherExpansionMod
         public static ConfigEntry<float> EvapMassPerWaterTile = null!;
         public static ConfigEntry<float> RainMassPerWaterTile = null!;
         public static ConfigEntry<int> MaxNetRainWaterTiles = null!;
+        public static ConfigEntry<int> MaxNetEvapWaterTiles = null!;
         public static ConfigEntry<KeyCode> ToggleFullMapKey = null!;
         public static ConfigEntry<KeyCode> CycleDebugOverlayKey = null!;
         public static ConfigEntry<KeyCode> ToggleHudKey = null!;
@@ -147,8 +148,12 @@ namespace WeatherExpansionMod
                 new ConfigDescription("Cumulative rain deposited on a ground tile before spawning 1 water tile (5x slower in v1.0.2, matched 1:1 with EvapMassPerWaterTile).", new AcceptableValueRange<float>(0.05f, 5.0f)));
 
             MaxNetRainWaterTiles = cfg.Bind(
-                "Hydrology", "MaxNetRainWaterTiles", 40,
-                new ConfigDescription("Soft cap on net new water tiles (RainSpawned - Evaporated) allowed from initial atmospheric humidity, preventing map flooding.", new AcceptableValueRange<int>(0, 500)));
+                "Hydrology", "MaxNetRainWaterTiles", 2000,
+                new ConfigDescription("Stop spawning new ground water tiles from rain once (RainWaterTiles - EvaporatedTiles) >= this limit.", new AcceptableValueRange<int>(0, 100000)));
+
+            MaxNetEvapWaterTiles = cfg.Bind(
+                "Hydrology", "MaxNetEvapWaterTiles", 2000,
+                new ConfigDescription("Stop removing water tiles from evaporation once (EvaporatedTiles - RainWaterTiles) >= this limit (water vapor still generates normally).", new AcceptableValueRange<int>(0, 100000)));
 
             ToggleFullMapKey = cfg.Bind(
                 "Debug", "ToggleFullMapKey", KeyCode.F7,
@@ -166,7 +171,8 @@ namespace WeatherExpansionMod
                 "Debug", "ShowHudByDefault", true,
                 "Show compact local weather status HUD on startup.");
 
-            // Auto-migrate unchanged v1.0.1 defaults (0.14 -> 0.70) so upgrading users immediately get v1.0.2 water-cycle pacing
+            // Auto-migrate unchanged defaults across versions so upgrading users immediately receive new balance settings
+            bool migrated = false;
             if (ConfigSchemaVersion.Value < 2)
             {
                 if (Mathf.Abs(EvapMassPerWaterTile.Value - 0.14f) < 0.005f)
@@ -174,6 +180,17 @@ namespace WeatherExpansionMod
                 if (Mathf.Abs(RainMassPerWaterTile.Value - 0.14f) < 0.005f)
                     RainMassPerWaterTile.Value = 0.70f;
                 ConfigSchemaVersion.Value = 2;
+                migrated = true;
+            }
+            if (ConfigSchemaVersion.Value < 3)
+            {
+                if (MaxNetRainWaterTiles.Value == 40)
+                    MaxNetRainWaterTiles.Value = 2000;
+                ConfigSchemaVersion.Value = 3;
+                migrated = true;
+            }
+            if (migrated)
+            {
                 cfg.Save();
             }
         }
