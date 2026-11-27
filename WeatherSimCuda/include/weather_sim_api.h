@@ -136,6 +136,16 @@ WEATHER_API void WeatherSim_SetMidLayerTemp(WeatherSimHandle* handle, float midL
 // Reset fields to resting hydrostatic state at current midLayerTempC and initialRelHumidity
 WEATHER_API int32_t WeatherSim_ResetFields(WeatherSimHandle* handle);
 
+// Apply multi-octave 2D Perlin noise perturbation to initial temperature (T) and humidity (qv) fields.
+// Coordinates are scaled in game tiles (i * cellSizeTiles), independent of coarsen/subdivision.
+WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
+    WeatherSimHandle* handle,
+    int32_t seed,
+    float tempAmpC,
+    float rhAmp,
+    float wavelengthTiles,
+    int32_t octaves);
+
 // Upload full cellType grid (size = width * height, row-major y * width + x)
 WEATHER_API int32_t WeatherSim_UploadCellsFull(WeatherSimHandle* handle, const uint8_t* cellTypes);
 

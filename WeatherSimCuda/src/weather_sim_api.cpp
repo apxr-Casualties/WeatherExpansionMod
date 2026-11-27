@@ -294,6 +294,21 @@ WEATHER_API int32_t WeatherSim_ResetFields(WeatherSimHandle* handle) {
     return (int32_t)err;
 }
 
+WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
+    WeatherSimHandle* handle,
+    int32_t seed,
+    float tempAmpC,
+    float rhAmp,
+    float wavelengthTiles,
+    int32_t octaves)
+{
+    if (!handle) return -1;
+    cudaError_t err = launchApplyInitialPerlinNoise(handle, seed, tempAmpC, rhAmp, wavelengthTiles, octaves);
+    if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
 WEATHER_API int32_t WeatherSim_UploadCellsFull(WeatherSimHandle* handle, const uint8_t* cellTypes) {
     if (!handle || !cellTypes) return -1;
     size_t N = (size_t)handle->cfg.width * (size_t)handle->cfg.height;

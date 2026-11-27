@@ -119,6 +119,13 @@ struct WeatherSimHandle {
 
 // Host-callable launcher declarations (implemented in weather_kernels.cu)
 cudaError_t launchResetFields(WeatherSimHandle* h);
+cudaError_t launchApplyInitialPerlinNoise(
+    WeatherSimHandle* h,
+    int32_t seed,
+    float tempAmpC,
+    float rhAmp,
+    float wavelengthTiles,
+    int32_t octaves);
 cudaError_t launchPatchCells(WeatherSimHandle* h, int32_t count);
 cudaError_t launchPatchStaticHeat(WeatherSimHandle* h, int32_t count);
 cudaError_t launchStampDynamicHeaters(WeatherSimHandle* h, int32_t count);

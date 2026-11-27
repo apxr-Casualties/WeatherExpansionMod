@@ -181,6 +181,100 @@ __global__ void kResetFields(
     latentRate[id] = 0.0f;
 }
 
+__device__ __forceinline__ float perlinFade(float t) {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+__device__ __forceinline__ uint32_t perlinHash(int32_t x, int32_t y, uint32_t seed) {
+    uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + seed * 1442695041u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+__device__ __forceinline__ float perlinGrad(int32_t ix, int32_t iy, float dx, float dy, uint32_t seed) {
+    uint32_t h = perlinHash(ix, iy, seed) & 7u;
+    // 8 unit-ish gradient directions
+    const float invSqrt2 = 0.70710678f;
+    switch (h) {
+        case 0u: return  dx;
+        case 1u: return -dx;
+        case 2u: return  dy;
+        case 3u: return -dy;
+        case 4u: return ( dx + dy) * invSqrt2;
+        case 5u: return (-dx + dy) * invSqrt2;
+        case 6u: return ( dx - dy) * invSqrt2;
+        default: return (-dx - dy) * invSqrt2;
+    }
+}
+
+__device__ __forceinline__ float perlin2D(float x, float y, uint32_t seed) {
+    int32_t x0 = (int32_t)floorf(x);
+    int32_t y0 = (int32_t)floorf(y);
+    float fx = x - (float)x0;
+    float fy = y - (float)y0;
+
+    float u = perlinFade(fx);
+    float v = perlinFade(fy);
+
+    float n00 = perlinGrad(x0,     y0,     fx,        fy,        seed);
+    float n10 = perlinGrad(x0 + 1, y0,     fx - 1.0f, fy,        seed);
+    float n01 = perlinGrad(x0,     y0 + 1, fx,        fy - 1.0f, seed);
+    float n11 = perlinGrad(x0 + 1, y0 + 1, fx - 1.0f, fy - 1.0f, seed);
+
+    float nx0 = n00 + u * (n10 - n00);
+    float nx1 = n01 + u * (n11 - n01);
+    return nx0 + v * (nx1 - nx0);
+}
+
+__device__ __forceinline__ float fbmPerlin2D(float x, float y, uint32_t seed, int32_t octaves) {
+    float sum = 0.0f;
+    float amp = 1.0f;
+    float norm = 0.0f;
+    float freq = 1.0f;
+    for (int32_t o = 0; o < octaves; ++o) {
+        sum += amp * perlin2D(x * freq, y * freq, seed + (uint32_t)o * 1013904223u);
+        norm += amp;
+        amp *= 0.5f;
+        freq *= 2.0f;
+    }
+    // Scale up slightly because 2D Perlin peaks near ~0.707
+    float val = (norm > 1e-6f) ? (sum / norm) * 1.414f : 0.0f;
+    return fminf(fmaxf(val, -1.0f), 1.0f);
+}
+
+__global__ void kApplyInitialPerlinNoise(
+    WeatherSimConfig cfg,
+    uint32_t seed,
+    float tempAmpC,
+    float rhAmp,
+    float invWavelength,
+    int32_t octaves,
+    float* __restrict__ T,
+    float* __restrict__ qv)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= cfg.width || j >= cfg.height) return;
+
+    int id = cellIdx(i, j, cfg.width);
+    float tx = (float)i * cfg.cellSizeTiles * invWavelength;
+    float ty = (float)j * cfg.cellSizeTiles * invWavelength;
+
+    float nT = (tempAmpC != 0.0f) ? fbmPerlin2D(tx, ty, seed, octaves) : 0.0f;
+    float nRH = (rhAmp != 0.0f) ? fbmPerlin2D(tx + 137.3f, ty + 291.7f, seed ^ 0x517cc1b7u, octaves) : 0.0f;
+
+    float newT = fminf(fmaxf(T[id] + nT * tempAmpC, -45.0f), 55.0f);
+    T[id] = newT;
+
+    float qsw, dq, qsi, dqi;
+    satWater(newT, qsw, dq);
+    satIce(newT, qsi, dqi);
+    float qs = (newT <= 0.0f) ? qsi : qsw;
+
+    float targetRh = fminf(fmaxf(cfg.initialRelHumidity + nRH * rhAmp, 0.08f), 1.02f);
+    qv[id] = qs * targetRh;
+}
+
 __global__ void kPatchCells(
     int W, int H,
     const int32_t* __restrict__ xs,
@@ -1342,6 +1436,33 @@ cudaError_t launchResetFields(WeatherSimHandle* h) {
     if (h->d.d_fluidEventCount) {
         cudaMemsetAsync(h->d.d_fluidEventCount, 0, sizeof(int32_t), h->stream);
     }
+    return cudaGetLastError();
+}
+
+cudaError_t launchApplyInitialPerlinNoise(
+    WeatherSimHandle* h,
+    int32_t seed,
+    float tempAmpC,
+    float rhAmp,
+    float wavelengthTiles,
+    int32_t octaves)
+{
+    if (tempAmpC == 0.0f && rhAmp == 0.0f) return cudaSuccess;
+    int W = h->cfg.width, H = h->cfg.height;
+    dim3 block(16, 16);
+    dim3 grid((W + 15) / 16, (H + 15) / 16);
+    float invWave = 1.0f / fmaxf(wavelengthTiles, 8.0f);
+    int32_t oct = octaves < 1 ? 1 : (octaves > 6 ? 6 : octaves);
+
+    kApplyInitialPerlinNoise<<<grid, block, 0, h->stream>>>(
+        h->cfg,
+        (uint32_t)seed,
+        tempAmpC,
+        rhAmp,
+        invWave,
+        oct,
+        h->d.T,
+        h->d.qv);
     return cudaGetLastError();
 }
 
