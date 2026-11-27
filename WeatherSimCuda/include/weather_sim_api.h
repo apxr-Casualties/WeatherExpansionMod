@@ -68,7 +68,7 @@ typedef struct WeatherSimConfig {
     float   bottomTempBoostC;      // Rainy/Layer7: extra warmth in lower stratum (deg C)
     float   topTempDropC;          // Rainy/Layer6/7: extra cooling in upper stratum (deg C, positive = colder top)
     float   bottomMoistureSource;  // Rainy/Foggy: steady lower-stratum vapor injection (kg/kg per s)
-    float   ambientHumidityTarget; // Foggy/Layer6: gentle ambient RH floor (>0 enables slow relaxation)
+    float   ambientHumidityTarget; // Foggy/Layer6: gentle ambient RH floor (>0 global floor; <0 applies -target to lower zone only)
     float   ambientHumidityRate;   // Relaxation rate toward ambientHumidityTarget (1/s)
 
     // Hydrological water-cycle thresholds (game-tile scale)
@@ -136,8 +136,18 @@ WEATHER_API void WeatherSim_SetMidLayerTemp(WeatherSimHandle* handle, float midL
 // Reset fields to resting hydrostatic state at current midLayerTempC and initialRelHumidity
 WEATHER_API int32_t WeatherSim_ResetFields(WeatherSimHandle* handle);
 
+// Apply smooth vertical relative humidity gradient to initial qv field (j/H <= yBottomFrac -> bottomRh,
+// j/H >= yTopFrac -> topRh, smoothstep in between). Call after WeatherSim_ResetFields and before ApplyInitialPerlinNoise.
+WEATHER_API int32_t WeatherSim_ApplyInitialHumidityGradient(
+    WeatherSimHandle* handle,
+    float bottomRh,
+    float topRh,
+    float yBottomFrac,
+    float yTopFrac);
+
 // Apply multi-octave 2D Perlin noise perturbation to initial temperature (T) and humidity (qv) fields.
 // Coordinates are scaled in game tiles (i * cellSizeTiles), independent of coarsen/subdivision.
+// Preserves any existing spatial RH baseline (e.g. from ApplyInitialHumidityGradient) when perturbing.
 WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
     WeatherSimHandle* handle,
     int32_t seed,
@@ -145,6 +155,13 @@ WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
     float rhAmp,
     float wavelengthTiles,
     int32_t octaves);
+
+// Upload optional static per-cell moisture source field (size = width * height; null clears to 0).
+//   value > 0: warm/neutral vapor injection (kg/kg per s, capped near saturation, no evaporative cooling)
+//   value < 0: non-depleting waterfall/spray evaporation rate (-value in 1/s, Dalton law + evaporative cooling)
+WEATHER_API int32_t WeatherSim_UploadMoistureSources(
+    WeatherSimHandle* handle,
+    const float* moistureRates);
 
 // Upload full cellType grid (size = width * height, row-major y * width + x)
 WEATHER_API int32_t WeatherSim_UploadCellsFull(WeatherSimHandle* handle, const uint8_t* cellTypes);

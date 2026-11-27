@@ -242,6 +242,33 @@ __device__ __forceinline__ float fbmPerlin2D(float x, float y, uint32_t seed, in
     return fminf(fmaxf(val, -1.0f), 1.0f);
 }
 
+__global__ void kApplyInitialHumidityGradient(
+    WeatherSimConfig cfg,
+    float bottomRh,
+    float topRh,
+    float yBottomFrac,
+    float yTopFrac,
+    const float* __restrict__ T,
+    float* __restrict__ qv)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= cfg.width || j >= cfg.height) return;
+
+    int id = cellIdx(i, j, cfg.width);
+    float yn = (float)j / fmaxf((float)(cfg.height - 1), 1.0f);
+    float span = fmaxf(yTopFrac - yBottomFrac, 1e-4f);
+    float t = smoothstep01((yn - yBottomFrac) / span);
+    float rh = fminf(fmaxf(bottomRh + (topRh - bottomRh) * t, 0.05f), 1.02f);
+
+    float temp = T[id];
+    float qsw, dq, qsi, dqi;
+    satWater(temp, qsw, dq);
+    satIce(temp, qsi, dqi);
+    float qs = (temp <= 0.0f) ? qsi : qsw;
+    qv[id] = qs * rh;
+}
+
 __global__ void kApplyInitialPerlinNoise(
     WeatherSimConfig cfg,
     uint32_t seed,
@@ -257,13 +284,20 @@ __global__ void kApplyInitialPerlinNoise(
     if (i >= cfg.width || j >= cfg.height) return;
 
     int id = cellIdx(i, j, cfg.width);
+    float oldT = T[id];
+    float oldQsw, oldDq, oldQsi, oldDqi;
+    satWater(oldT, oldQsw, oldDq);
+    satIce(oldT, oldQsi, oldDqi);
+    float oldQs = (oldT <= 0.0f) ? oldQsi : oldQsw;
+    float baseRh = (oldQs > 1e-7f) ? (qv[id] / oldQs) : cfg.initialRelHumidity;
+
     float tx = (float)i * cfg.cellSizeTiles * invWavelength;
     float ty = (float)j * cfg.cellSizeTiles * invWavelength;
 
     float nT = (tempAmpC != 0.0f) ? fbmPerlin2D(tx, ty, seed, octaves) : 0.0f;
     float nRH = (rhAmp != 0.0f) ? fbmPerlin2D(tx + 137.3f, ty + 291.7f, seed ^ 0x517cc1b7u, octaves) : 0.0f;
 
-    float newT = fminf(fmaxf(T[id] + nT * tempAmpC, -45.0f), 55.0f);
+    float newT = fminf(fmaxf(oldT + nT * tempAmpC, -45.0f), 55.0f);
     T[id] = newT;
 
     float qsw, dq, qsi, dqi;
@@ -271,7 +305,9 @@ __global__ void kApplyInitialPerlinNoise(
     satIce(newT, qsi, dqi);
     float qs = (newT <= 0.0f) ? qsi : qsw;
 
-    float targetRh = fminf(fmaxf(cfg.initialRelHumidity + nRH * rhAmp, 0.08f), 1.02f);
+    float targetRh = (rhAmp != 0.0f)
+        ? fminf(fmaxf(baseRh + nRH * rhAmp, 0.08f), 1.02f)
+        : fminf(fmaxf(baseRh, 0.05f), 1.02f);
     qv[id] = qs * targetRh;
 }
 
@@ -827,6 +863,7 @@ __global__ void kMicrophysicsStep(
     WeatherSimConfig cfg, float dt,
     const uint8_t* __restrict__ cellType,
     const float* __restrict__ heatSource,
+    const float* __restrict__ moistureSource,
     const float* __restrict__ dynHeat,
     const float* __restrict__ u,
     const float* __restrict__ v,
@@ -880,14 +917,20 @@ __global__ void kMicrophysicsStep(
                 v_qv = fminf(v_qv + cfg.bottomMoistureSource * wBot * dt, targetCap);
             }
         }
-        if (cfg.ambientHumidityTarget > 0.0f && cfg.ambientHumidityRate > 0.0f) {
-            float qswMod, dqMod, qsiMod, dqiMod;
-            satWater(temp, qswMod, dqMod);
-            satIce(temp, qsiMod, dqiMod);
-            float qsMod = (temp <= 0.0f) ? qsiMod : qswMod;
-            float qvFloor = qsMod * cfg.ambientHumidityTarget;
-            if (v_qv < qvFloor) {
-                v_qv += (qvFloor - v_qv) * (1.0f - expf(-cfg.ambientHumidityRate * dt));
+        if (cfg.ambientHumidityTarget != 0.0f && cfg.ambientHumidityRate > 0.0f) {
+            float effRate = (cfg.ambientHumidityTarget > 0.0f)
+                ? cfg.ambientHumidityRate
+                : (cfg.ambientHumidityRate * wBot);
+            if (effRate > 0.0f) {
+                float targetRh = fabsf(cfg.ambientHumidityTarget);
+                float qswMod, dqMod, qsiMod, dqiMod;
+                satWater(temp, qswMod, dqMod);
+                satIce(temp, qsiMod, dqiMod);
+                float qsMod = (temp <= 0.0f) ? qsiMod : qswMod;
+                float qvFloor = qsMod * targetRh;
+                if (v_qv < qvFloor) {
+                    v_qv += (qvFloor - v_qv) * (1.0f - expf(-effRate * dt));
+                }
             }
         }
     }
@@ -906,6 +949,35 @@ __global__ void kMicrophysicsStep(
     float LvCpEvap = kLvOverCp * cfg.evapCoolingScale;
 
     float dTLatent = 0.0f;
+
+    // 1b. Static per-cell moisture sources in open air:
+    //     ms > 0: warm/neutral convective vapor injection (kg/kg/s, no evaporative cooling)
+    //     ms < 0: non-depleting waterfall/spray evaporation (-ms in 1/s, Dalton law + evaporative cooling)
+    if (ctype == WEATHER_CELL_AIR) {
+        float ms = moistureSource[id];
+        if (ms > 0.0f) {
+            float qswSrc, dqSrc;
+            satWater(temp, qswSrc, dqSrc);
+            float cap = 1.025f * qswSrc;
+            if (v_qv < cap) {
+                v_qv = fminf(v_qv + ms * dt, cap);
+            }
+        } else if (ms < 0.0f) {
+            float qswSrc, dqSrc;
+            satWater(temp, qswSrc, dqSrc);
+            float deficit = 1.015f * qswSrc - v_qv;
+            if (deficit > 0.0f) {
+                float rate = (-ms) * (1.0f + cfg.evapWindFactor * speed);
+                float frac = 1.0f - expf(-rate * dt);
+                float maxEq = deficit / (1.0f + LvCpEvap * dqSrc);
+                float evap = fminf(deficit * frac, maxEq);
+                v_qv += evap;
+                float cool = LvCpEvap * evap;
+                temp -= cool;
+                dTLatent -= cool;
+            }
+        }
+    }
 
     // 2. Real Dalton's Law water evaporation inside game water cells (proportional to wind & saturation deficit)
     if (ctype == WEATHER_CELL_WATER && cfg.evapRateCoeff > 0.0f) {
@@ -1439,6 +1511,27 @@ cudaError_t launchResetFields(WeatherSimHandle* h) {
     return cudaGetLastError();
 }
 
+cudaError_t launchApplyInitialHumidityGradient(
+    WeatherSimHandle* h,
+    float bottomRh,
+    float topRh,
+    float yBottomFrac,
+    float yTopFrac)
+{
+    int W = h->cfg.width, H = h->cfg.height;
+    dim3 block(16, 16);
+    dim3 grid((W + 15) / 16, (H + 15) / 16);
+    kApplyInitialHumidityGradient<<<grid, block, 0, h->stream>>>(
+        h->cfg,
+        bottomRh,
+        topRh,
+        yBottomFrac,
+        yTopFrac,
+        h->d.T,
+        h->d.qv);
+    return cudaGetLastError();
+}
+
 cudaError_t launchApplyInitialPerlinNoise(
     WeatherSimHandle* h,
     int32_t seed,
@@ -1632,7 +1725,7 @@ cudaError_t launchStepSimulation(WeatherSimHandle* h, float dt) {
     // 6. Microphysics
     kMicrophysicsStep<<<gridCell, block, 0, h->stream>>>(
         cfg, dt,
-        h->d.cellType, h->d.heatSource, h->d.dynHeat,
+        h->d.cellType, h->d.heatSource, h->d.moistureSource, h->d.dynHeat,
         h->d.u, h->d.v,
         h->d.T, h->d.qv, h->d.qc, h->d.qr, h->d.qi,
         h->d.snowAccum, h->d.evapAccum, h->d.rainAccum, h->d.latentRate);

@@ -17,8 +17,9 @@ struct WeatherMgLevel {
 struct WeatherSimDeviceBuffers {
     // Geometry & sources (W * H)
     uint8_t* cellType = nullptr;
-    float*   heatSource = nullptr;  // Static terrain heat (hot blocks, magma)
-    float*   dynHeat = nullptr;     // Dynamic scene heat (campfires, torches, Heater crystals)
+    float*   heatSource = nullptr;     // Static terrain/layer heat & cooling (deg C / s)
+    float*   moistureSource = nullptr; // Static moisture (>0 warm vapor kg/kg/s; <0 evaporative spray -rate 1/s)
+    float*   dynHeat = nullptr;        // Dynamic scene heat (campfires, torches, Heater crystals)
     float*   windForceX = nullptr;
     float*   windForceY = nullptr;
 
@@ -119,6 +120,12 @@ struct WeatherSimHandle {
 
 // Host-callable launcher declarations (implemented in weather_kernels.cu)
 cudaError_t launchResetFields(WeatherSimHandle* h);
+cudaError_t launchApplyInitialHumidityGradient(
+    WeatherSimHandle* h,
+    float bottomRh,
+    float topRh,
+    float yBottomFrac,
+    float yTopFrac);
 cudaError_t launchApplyInitialPerlinNoise(
     WeatherSimHandle* h,
     int32_t seed,

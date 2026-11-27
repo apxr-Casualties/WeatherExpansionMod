@@ -27,6 +27,7 @@ void destroyAllBuffers(WeatherSimHandle* h) {
     if (!h) return;
     freeBuf(h->d.cellType);
     freeBuf(h->d.heatSource);
+    freeBuf(h->d.moistureSource);
     freeBuf(h->d.dynHeat);
     freeBuf(h->d.windForceX);
     freeBuf(h->d.windForceY);
@@ -179,6 +180,7 @@ WEATHER_API WeatherSimHandle* WeatherSim_Create(const WeatherSimConfig* config) 
     uint64_t& bytes = h->allocatedVramBytes;
     check(allocBuf(&h->d.cellType, N, bytes));
     check(allocBuf(&h->d.heatSource, N, bytes));
+    check(allocBuf(&h->d.moistureSource, N, bytes));
     check(allocBuf(&h->d.dynHeat, N, bytes));
     check(allocBuf(&h->d.windForceX, N, bytes));
     check(allocBuf(&h->d.windForceY, N, bytes));
@@ -294,6 +296,20 @@ WEATHER_API int32_t WeatherSim_ResetFields(WeatherSimHandle* handle) {
     return (int32_t)err;
 }
 
+WEATHER_API int32_t WeatherSim_ApplyInitialHumidityGradient(
+    WeatherSimHandle* handle,
+    float bottomRh,
+    float topRh,
+    float yBottomFrac,
+    float yTopFrac)
+{
+    if (!handle) return -1;
+    cudaError_t err = launchApplyInitialHumidityGradient(handle, bottomRh, topRh, yBottomFrac, yTopFrac);
+    if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
 WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
     WeatherSimHandle* handle,
     int32_t seed,
@@ -304,6 +320,20 @@ WEATHER_API int32_t WeatherSim_ApplyInitialPerlinNoise(
 {
     if (!handle) return -1;
     cudaError_t err = launchApplyInitialPerlinNoise(handle, seed, tempAmpC, rhAmp, wavelengthTiles, octaves);
+    if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
+    handle->lastCudaError = (int32_t)err;
+    return (int32_t)err;
+}
+
+WEATHER_API int32_t WeatherSim_UploadMoistureSources(WeatherSimHandle* handle, const float* moistureRates) {
+    if (!handle) return -1;
+    size_t N = (size_t)handle->cfg.width * (size_t)handle->cfg.height;
+    cudaError_t err;
+    if (moistureRates) {
+        err = cudaMemcpyAsync(handle->d.moistureSource, moistureRates, N * sizeof(float), cudaMemcpyHostToDevice, handle->stream);
+    } else {
+        err = cudaMemsetAsync(handle->d.moistureSource, 0, N * sizeof(float), handle->stream);
+    }
     if (err == cudaSuccess) err = cudaStreamSynchronize(handle->stream);
     handle->lastCudaError = (int32_t)err;
     return (int32_t)err;
